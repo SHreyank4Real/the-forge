@@ -1,0 +1,92 @@
+# =============================================================================
+# The Forge - .gitignore
+# =============================================================================
+
+# --- OS & Editor ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# --- SSH & Secrets (CRITICAL - never commit these) ---
+*.pem
+*.key
+*.pub
+id_rsa
+id_ed25519
+ssh-key.pub
+kops-access_key.json
+*-kubeconfig
+kubeconfig
+.env
+.env.*
+*.secret
+*.secrets
+
+# --- AWS ---
+.aws/
+aws-credentials
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# --- Kubernetes ---
+*.kubeconfig
+kubeconfig.*
+
+# --- Terraform ---
+*.tfvars
+!*.tfvars.example
+.terraformrc
+terraform.rc
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Helm ---
+charts/*/charts/
+*.tgz
+
+# --- Node / Dependencies ---
+node_modules/
+package-lock.json
+yarn.lock
+
+# --- Logs ---
+*.log
+logs/
+npm-debug.log*
+
+# --- Build artifacts ---
+dist/
+build/
+out/
+*.o
+*.so
+*.dylib
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/

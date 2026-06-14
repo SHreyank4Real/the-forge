@@ -1,0 +1,187 @@
+name: Install Cluster in AWS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  SETUP:
+    runs-on: ubuntu-latest
+    
+    environment: forge-k8s
+    env:
+      REGION: ${{ vars.REGION }}
+      BUCKET_NAME: ${{ vars.BUCKET_NAME }}-${{ vars.REGION }}
+      CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+      MASTER_COUNT: ${{ vars.MASTER_COUNT }}
+      NODE_COUNT: ${{ vars.NODE_COUNT }}
+      NODE_SIZE: ${{ vars.NODE_SIZE }}
+      MASTER_SIZE: ${{ vars.MASTER_SIZE }}
+      VOL_SIZE: ${{ vars.VOL_SIZE }}
+      SSH_PUBLIC_KEY: ${{ vars.SSH_PUBLIC_KEY }}
+      VPC_CIDR: ${{ vars.VPC_CIDR }}
+      HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
+      AWS_ACCESS_KEY: ${{ vars.AWS_ACCESS_KEY }}
+      AWS_SECRET_KEY: ${{ secrets.AWS_SEC_KEY }}
+      KOPS_CREDS_BUCKET_NAME: ${{ vars.CREDS_BUCKET_NAME }}-${{ vars.HOSTED_ZONE_ID }}
+
+    steps:
+      - name: Check and install kops
+        run: |
+          if ! command -v kops &> /dev/null; then
+            echo "kops not found, installing..."
+            KOPS_VERSION="v1.33.0"
+            curl -Lo "kops-linux-amd64" "https://github.com/kubernetes/kops/releases/download/${KOPS_VERSION}/kops-linux-amd64"
+            chmod +x kops-linux-amd64
+            sudo mv kops-linux-amd64 /usr/local/bin/kops
+          fi
+          kops version
+
+      - name: Check and install kubectl
+        run: |
+          if ! command -v kubectl &> /dev/null; then
+            echo "kubectl not found, installing..."
+            KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+            curl -Lo "kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+          fi
+          kubectl version --client
+
+      - name: Check and install AWS CLI
+        run: |
+          if ! command -v aws &> /dev/null; then
+            echo "AWS CLI not found, installing..."
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
+          aws --version
+
+      - uses: actions/checkout@v4
+
+      - name: Create kops credentials
+        run: |
+          # Set initial creds from environment
+          export "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY"
+          export "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY"
+
+          # Ensure bucket names are lowercase
+          BUCKET_LOWER=$(echo "$BUCKET_NAME" | tr '[:upper:]' '[:lower:]')
+          CREDS_BUCKET_LOWER=$(echo "$KOPS_CREDS_BUCKET_NAME" | tr '[:upper:]' '[:lower:]')
+
+          echo "Creating S3 bucket: $BUCKET_LOWER in $REGION"
+          aws s3api create-bucket --bucket $BUCKET_LOWER --region $REGION || echo "[INFO] Bucket may already exist"
+
+          # Debug identity
+          aws sts get-caller-identity
+
+          # Create IAM group + user
+          if aws iam create-group --group-name kops --output text > /dev/null ; then    
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/AmazonEC2FullAccess --group-name kops
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/AmazonRoute53FullAccess --group-name kops
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess --group-name kops
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/IAMFullAccess --group-name kops
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/AmazonVPCFullAccess --group-name kops
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/AmazonSQSFullAccess --group-name kops
+              aws iam attach-group-policy --policy-arn arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess --group-name kops
+              echo "[OK] IAM group 'kops' created and policies attached"
+          else
+              echo "[INFO] IAM group 'kops' already exists"
+          fi
+
+          if aws iam create-user --user-name kops --output text > /dev/null ; then
+              aws iam add-user-to-group --user-name kops --group-name kops
+              aws iam create-access-key --user-name kops > kops-access_key.json
+              echo "[OK] IAM user 'kops' created and added to group"
+          else
+              echo "[INFO] IAM user 'kops' already exists"
+          fi
+
+          # Export variables for next step
+          echo "BUCKET_LOWER=$BUCKET_LOWER" >> $GITHUB_ENV
+          echo "CREDS_BUCKET_LOWER=$CREDS_BUCKET_LOWER" >> $GITHUB_ENV
+
+          ls -l
+
+      - name: Create cluster
+        run: |
+          # Recreate bucket variables (backup method if env vars don't work)
+          if [ -z "$BUCKET_LOWER" ]; then
+            BUCKET_LOWER=$(echo "$BUCKET_NAME" | tr '[:upper:]' '[:lower:]')
+          fi
+          if [ -z "$CREDS_BUCKET_LOWER" ]; then
+            CREDS_BUCKET_LOWER=$(echo "$KOPS_CREDS_BUCKET_NAME" | tr '[:upper:]' '[:lower:]')
+          fi
+
+          unset AWS_ACCESS_KEY_ID
+          unset AWS_SECRET_ACCESS_KEY
+          # Update creds with newly generated key
+          export AWS_ACCESS_KEY_ID=$(jq -r '.AccessKey.AccessKeyId' kops-access_key.json)
+          export AWS_SECRET_ACCESS_KEY=$(jq -r '.AccessKey.SecretAccessKey' kops-access_key.json)
+
+          echo "Using BUCKET_LOWER=$BUCKET_LOWER"
+          echo "Using CREDS_BUCKET_LOWER=$CREDS_BUCKET_LOWER"
+          echo "Using AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+          
+          echo "Waiting for credentials to propagate..."
+          for i in {1..12}; do
+              if aws sts get-caller-identity > /dev/null 2>&1; then
+                  echo "Credentials are ready!"
+                  break
+              else
+                  echo "Attempt $i/12: Credentials not ready, waiting 15 seconds..."
+                  sleep 15
+              fi
+          done
+          
+          echo "[OK] Using new AWS credentials:"
+          aws sts get-caller-identity
+
+          # Enable bucket features
+          aws s3api put-bucket-versioning --bucket $BUCKET_LOWER --versioning-configuration Status=Enabled
+          aws s3api put-bucket-encryption --bucket $BUCKET_LOWER --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+          echo "[OK] S3 bucket '$BUCKET_LOWER' versioning + encryption enabled"
+
+          # Create credentials bucket if it doesn't exist
+          if [ "$REGION" = "us-east-1" ]; then
+            aws s3api create-bucket --bucket $CREDS_BUCKET_LOWER || echo "[INFO] Credentials bucket may already exist"
+          else
+            aws s3api create-bucket --bucket $CREDS_BUCKET_LOWER --region $REGION --create-bucket-configuration LocationConstraint=$REGION || echo "[INFO] Credentials bucket may already exist"
+          fi
+
+          # Export kops state store
+          export NAME=$CLUSTER_NAME
+          export KOPS_STATE_STORE=s3://$BUCKET_LOWER
+          echo "[OK] Environment: NAME=$NAME, KOPS_STATE_STORE=$KOPS_STATE_STORE"
+          echo "${SSH_PUBLIC_KEY}" > ssh-key.pub
+          # Create cluster
+          kops create cluster --name=${NAME} --cloud=aws --networking=calico \
+            --zones=${REGION}a,${REGION}b \
+            --control-plane-volume-size=${VOL_SIZE} \
+            --node-volume-size=${VOL_SIZE} \
+            --node-count=${NODE_COUNT} \
+            --node-size=${NODE_SIZE} \
+            --ssh-public-key=ssh-key.pub\
+            --control-plane-size=${MASTER_SIZE} \
+            --control-plane-count=${MASTER_COUNT} \
+            --dns-zone=${HOSTED_ZONE_ID} \
+            --network-cidr=${VPC_CIDR}
+
+          kops update cluster --name=${CLUSTER_NAME} --state s3://$BUCKET_LOWER --yes --admin
+          echo "[OK] Cluster update initiated..."
+
+          sleep 10m
+          kops validate cluster --name=${CLUSTER_NAME} --state s3://$BUCKET_LOWER || echo "[WARN] Validation failed, cluster may still be provisioning"
+
+          # Export kubeconfig
+          kops export kubeconfig --name=${CLUSTER_NAME} --state=s3://${BUCKET_LOWER} --admin --kubeconfig=./knightfall-kubeconfig
+          echo "[OK] Kubeconfig exported to knightfall-kubeconfig"
+
+          # Cleanup local kube context
+          kubectl config delete-context ${CLUSTER_NAME} || true
+          kubectl config delete-cluster ${CLUSTER_NAME} || true
+
+          # Upload creds + kubeconfig
+          aws s3 cp kops-access_key.json s3://$CREDS_BUCKET_LOWER/knightfall-creds/
+          aws s3 cp knightfall-kubeconfig s3://$CREDS_BUCKET_LOWER/knightfall-creds/
+          echo "[OK] Uploaded access key + kubeconfig to s3://$CREDS_BUCKET_LOWER/knightfall-creds/"
