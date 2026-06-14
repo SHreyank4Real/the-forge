@@ -1,0 +1,221 @@
+name: Install ArgoCD + Traefik
+
+on:
+  workflow_dispatch:
+    inputs:
+      acme_email:
+        description: "Email for Let's Encrypt registration"
+        required: true
+        type: string
+
+jobs:
+  INSTALL:
+    runs-on: ubuntu-latest
+
+    environment: forge-k8s
+    env:
+      REGION: ${{ vars.REGION }}
+      CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+      AWS_ACCESS_KEY: ${{ vars.AWS_ACCESS_KEY }}
+      AWS_SECRET_KEY: ${{ secrets.AWS_SEC_KEY }}
+      KOPS_CREDS_BUCKET_NAME: ${{ vars.CREDS_BUCKET_NAME }}-${{ vars.HOSTED_ZONE_ID }}
+      HOSTED_ZONE_ID: ${{ vars.HOSTED_ZONE_ID }}
+      ARGOCD_DOMAIN: argocd.${{ vars.HOSTED_ZONE_ID }}.realhandsonlabs.net
+      ACME_EMAIL: ${{ inputs.acme_email }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        run: |
+          KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+          curl -Lo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &> /dev/null; then
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          fi
+          aws --version
+
+      - name: Configure AWS credentials
+        run: |
+          export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY
+          export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY
+          echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY" >> $GITHUB_ENV
+          aws sts get-caller-identity
+
+      - name: Download kubeconfig from S3
+        run: |
+          CREDS_BUCKET_LOWER=$(echo "$KOPS_CREDS_BUCKET_NAME" | tr '[:upper:]' '[:lower:]')
+          aws s3 cp s3://$CREDS_BUCKET_LOWER/knightfall-creds/knightfall-kubeconfig ./kubeconfig
+          echo "KUBECONFIG=$(pwd)/kubeconfig" >> $GITHUB_ENV
+
+      - name: Verify cluster access
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      # =============================================
+      # TRAEFIK INSTALLATION
+      # =============================================
+      - name: Update Traefik values with ACME email
+        run: |
+          sed -i "s/CHANGE_ME@example.com/$ACME_EMAIL/g" manifests/traefik/values.yaml
+          echo "[OK] ACME email set to: $ACME_EMAIL"
+          cat manifests/traefik/values.yaml
+
+      - name: Pull Traefik chart
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo update
+
+          # Pull chart into charts/ folder
+          mkdir -p charts
+          helm pull traefik/traefik --untar --untardir charts/
+          echo "[OK] Traefik chart pulled to charts/traefik/"
+          ls -la charts/traefik/
+
+      - name: Install Traefik from local chart
+        run: |
+          helm upgrade --install traefik charts/traefik/ \
+            -n traefik --create-namespace \
+            -f manifests/traefik/values.yaml \
+            --wait --timeout 5m
+
+          echo "[OK] Traefik installed from local chart"
+          kubectl get pods -n traefik
+          kubectl get svc -n traefik
+
+      - name: Wait for Traefik NLB
+        run: |
+          echo "Waiting for NLB to get a hostname..."
+          for i in {1..30}; do
+            NLB_HOST=$(kubectl get svc traefik -n traefik -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [[ -n "$NLB_HOST" ]]; then
+              echo "[OK] NLB hostname: $NLB_HOST"
+              echo "NLB_HOST=$NLB_HOST" >> $GITHUB_ENV
+              break
+            fi
+            echo "Attempt $i/30: NLB not ready, waiting 10s..."
+            sleep 10
+          done
+
+          if [[ -z "$NLB_HOST" ]]; then
+            echo "[ERROR] NLB hostname not available after 5 minutes"
+            exit 1
+          fi
+
+      # =============================================
+      # ROUTE53 DNS RECORD
+      # =============================================
+      - name: Create Route53 DNS record
+        run: |
+          # Find the hosted zone ID for the domain
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name "realhandsonlabs.net" \
+            --query "HostedZones[0].Id" --output text | sed 's|/hostedzone/||')
+
+          # If there's a subdomain-specific zone, prefer that
+          SUB_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name "${HOSTED_ZONE_ID}.realhandsonlabs.net" \
+            --query "HostedZones[?Name=='${HOSTED_ZONE_ID}.realhandsonlabs.net.'].Id" --output text | sed 's|/hostedzone/||')
+
+          if [[ -n "$SUB_ZONE_ID" ]]; then
+            ZONE_ID=$SUB_ZONE_ID
+            echo "Using subdomain zone: $ZONE_ID"
+          else
+            echo "Using root zone: $ZONE_ID"
+          fi
+
+          echo "[INFO] Creating CNAME: argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net -> $NLB_HOST"
+
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "$ZONE_ID" \
+            --change-batch '{
+              "Changes": [{
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "argocd.'"${HOSTED_ZONE_ID}"'.realhandsonlabs.net",
+                  "Type": "CNAME",
+                  "TTL": 300,
+                  "ResourceRecords": [{"Value": "'"$NLB_HOST"'"}]
+                }
+              }]
+            }'
+
+          echo "[OK] DNS record created"
+
+      # =============================================
+      # ARGOCD INSTALLATION
+      # =============================================
+      - name: Install ArgoCD v3.4.3
+        run: |
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Installing ArgoCD v3.4.3..."
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.3/manifests/install.yaml
+
+          echo "[OK] ArgoCD manifests applied"
+
+      - name: Patch ArgoCD to insecure mode
+        run: |
+          kubectl apply -f manifests/argocd/argocd-cmd-params-cm.yaml
+          kubectl rollout restart deployment argocd-server -n argocd
+          echo "[OK] ArgoCD server set to insecure mode (Traefik handles TLS)"
+
+      - name: Wait for ArgoCD pods
+        run: |
+          echo "Waiting for ArgoCD pods to be ready..."
+          kubectl wait --for=condition=Ready pods --all -n argocd --timeout=300s
+          echo "[OK] All ArgoCD pods are running"
+          kubectl get pods -n argocd
+
+      - name: Apply ArgoCD IngressRoute
+        run: |
+          # Update the domain in the IngressRoute if needed
+          sed -i "s/argocd.959750009970.realhandsonlabs.net/argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net/g" \
+            manifests/argocd/ingress-route.yaml
+
+          kubectl apply -f manifests/argocd/ingress-route.yaml
+          echo "[OK] IngressRoute applied for argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net"
+
+      - name: Get ArgoCD initial admin password
+        run: |
+          echo "============================================="
+          echo "  ArgoCD Installation Complete!"
+          echo "============================================="
+          echo ""
+          echo "  URL:      https://argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net"
+          echo "  Username: admin"
+          echo -n "  Password: "
+          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+          echo ""
+          echo ""
+          echo "  ⚠️  Change the admin password after first login!"
+          echo "============================================="
+
+      - name: Wait for DNS + TLS
+        run: |
+          echo "Waiting 60s for DNS propagation and Let's Encrypt cert issuance..."
+          sleep 60
+
+          echo "Testing HTTPS access..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net" --max-time 15 || true)
+          if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "302" ]]; then
+            echo "[OK] ArgoCD is accessible! HTTP $HTTP_CODE"
+          else
+            echo "[INFO] HTTP $HTTP_CODE — TLS cert may still be provisioning. Try again in a few minutes."
+            echo "[INFO] Let's Encrypt HTTP-01 challenge needs DNS to resolve first."
+          fi

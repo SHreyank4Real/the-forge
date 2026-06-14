@@ -1,0 +1,50 @@
+# Traefik Helm Values for kOps on AWS
+# Installs Traefik with Let's Encrypt ACME (HTTP-01 challenge)
+
+# --- Persistent storage for ACME certificates ---
+persistence:
+  enabled: true
+  size: 128Mi
+  path: /data
+
+# --- Let's Encrypt ACME configuration ---
+additionalArguments:
+  - "--certificatesresolvers.letsencrypt.acme.email=CHANGE_ME@example.com"
+  - "--certificatesresolvers.letsencrypt.acme.storage=/data/acme.json"
+  - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+  # Uncomment the line below to use Let's Encrypt staging (for testing, avoids rate limits)
+  # - "--certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+
+# --- Entrypoints ---
+ports:
+  web:
+    port: 8000
+    exposedPort: 80
+    protocol: TCP
+    redirectTo:
+      port: websecure
+  websecure:
+    port: 8443
+    exposedPort: 443
+    protocol: TCP
+    tls:
+      enabled: true
+      certResolver: letsencrypt
+
+# --- Service (AWS NLB) ---
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+
+# --- Deployment ---
+deployment:
+  replicas: 1
+
+# --- Logs ---
+logs:
+  general:
+    level: INFO
+  access:
+    enabled: true

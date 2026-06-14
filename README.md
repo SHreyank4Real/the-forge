@@ -1,19 +1,27 @@
 # 🔥 The Forge
 
-Automated Kubernetes cluster provisioning on AWS using [kOps](https://kops.sigs.k8s.io/) via GitHub Actions.
+Automated Kubernetes cluster provisioning on AWS using [kOps](https://kops.sigs.k8s.io/) via GitHub Actions, with **ArgoCD** for GitOps and **Traefik** for ingress.
 
 ---
 
 ## What It Does
 
-Runs a single GitHub Actions workflow (`workflow_dispatch`) that:
+Two GitHub Actions workflows (`workflow_dispatch`):
 
+### Forge K8s Cluster
 1. Installs **kOps**, **kubectl**, and **AWS CLI** on the runner
 2. Creates an IAM group/user (`kops`) with required AWS policies
 3. Provisions an S3 state store bucket with versioning + encryption
 4. Creates a **kOps Kubernetes cluster** with Calico networking
 5. Validates the cluster and exports the kubeconfig
 6. Uploads credentials + kubeconfig to a separate S3 bucket
+
+### Install ArgoCD + Traefik
+1. Downloads kubeconfig from S3
+2. Installs **Traefik** ingress controller with **Let's Encrypt** auto-TLS
+3. Creates **Route53 DNS record** for ArgoCD
+4. Installs **ArgoCD v3.4.3** in insecure mode (Traefik handles TLS)
+5. Outputs the initial admin password
 
 ---
 
@@ -22,7 +30,14 @@ Runs a single GitHub Actions workflow (`workflow_dispatch`) that:
 ```
 the-forge/
 ├── .github/workflows/
-│   └── kops-create-cluster.yml    # Main workflow — creates the K8s cluster
+│   ├── kops-create-cluster.yml    # Workflow 1 — creates the K8s cluster
+│   └── install-argocd.yml         # Workflow 2 — installs Traefik + ArgoCD
+├── manifests/
+│   ├── traefik/
+│   │   └── values.yaml            # Traefik Helm values (Let's Encrypt ACME)
+│   └── argocd/
+│       ├── argocd-cmd-params-cm.yaml  # ArgoCD insecure mode config
+│       └── ingress-route.yaml     # Traefik IngressRoute for ArgoCD
 ├── scripts/
 │   ├── setup-gh-env.sh            # First-time setup — sets all 13 vars + 1 secret
 │   └── update-vars.sh             # Quick update — changes only the 5 rotating values
@@ -63,6 +78,26 @@ gh run watch --repo SHreyank4Real/the-forge
 ```
 
 Or go to **Actions** tab → **Forge K8s cluster** → **Run workflow**.
+
+### 4. Install ArgoCD + Traefik
+
+After the cluster is running:
+
+```bash
+# Via CLI (will prompt for ACME email)
+gh workflow run "Install ArgoCD + Traefik" --repo SHreyank4Real/the-forge \
+  -f acme_email="your-email@example.com"
+
+# Watch the run
+gh run watch --repo SHreyank4Real/the-forge
+```
+
+Once complete, access ArgoCD at: `https://argocd.<HOSTED_ZONE_ID>.realhandsonlabs.net`
+
+**Architecture:**
+```
+Browser → HTTPS (Let's Encrypt) → Traefik (NLB) → ArgoCD Server (HTTP)
+```
 
 ---
 
