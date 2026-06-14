@@ -76,16 +76,16 @@ jobs:
           echo "[OK] ACME email set to: $ACME_EMAIL"
           cat manifests/traefik/values.yaml
 
-      - name: Pull Traefik chart
-        run: |
-          helm repo add traefik https://traefik.github.io/charts
-          helm repo update
+      # - name: Pull Traefik chart
+      #   run: |
+      #     helm repo add traefik https://traefik.github.io/charts
+      #     helm repo update
 
-          # Pull chart into charts/ folder
-          mkdir -p charts
-          helm pull traefik/traefik --untar --untardir charts/
-          echo "[OK] Traefik chart pulled to charts/traefik/"
-          ls -la charts/traefik/
+      #     # Pull chart into charts/ folder
+      #     mkdir -p charts
+      #     helm pull traefik/traefik --untar --untardir charts/
+      #     echo "[OK] Traefik chart pulled to charts/traefik/"
+      #     ls -la charts/traefik/
 
       - name: Install Traefik from local chart
         run: |
