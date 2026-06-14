@@ -21,15 +21,21 @@ ports:
     port: 8000
     exposedPort: 80
     protocol: TCP
-    redirectTo:
-      port: websecure
+    # New syntax for HTTP to HTTPS redirection
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
   websecure:
     port: 8443
     exposedPort: 443
     protocol: TCP
-    tls:
-      enabled: true
-      certResolver: letsencrypt
+    # New syntax for enabling TLS
+    http:
+      tls:
+        certResolver: letsencrypt
 
 # --- Service (AWS NLB) ---
 service:
