@@ -38,28 +38,28 @@ read -rp "AWS Region [us-east-1]: " REGION
 REGION=${REGION:-us-east-1}
 
 read -rp "S3 Bucket Name prefix for kOps state [the-forge-kops-state]: " BUCKET_NAME
-BUCKET_NAME=${BUCKET_NAME:-the-forge-kops-state}
+BUCKET_NAME=${BUCKET_NAME:-kops-state-store-102503111808}
 
-read -rp "Cluster Name (FQDN, e.g. cluster.example.com): " CLUSTER_NAME
+read -rp "Cluster Name (FQDN, e.g. knightfall.102503111808.realhandsonlabs.net): " CLUSTER_NAME
 while [[ -z "$CLUSTER_NAME" ]]; do
     echo "  ⚠️  Cluster name is required!"
-    read -rp "Cluster Name (FQDN, e.g. cluster.example.com): " CLUSTER_NAME
+    read -rp "Cluster Name (FQDN, e.g. knightfall.102503111808.realhandsonlabs.net): " CLUSTER_NAME
 done
 
-read -rp "Control Plane (master) count [1]: " MASTER_COUNT
-MASTER_COUNT=${MASTER_COUNT:-1}
+read -rp "Control Plane (master) count [13]: " MASTER_COUNT
+MASTER_COUNT=${MASTER_COUNT:-3}
 
-read -rp "Worker node count [2]: " NODE_COUNT
-NODE_COUNT=${NODE_COUNT:-2}
+read -rp "Worker node count [4]: " NODE_COUNT
+NODE_COUNT=${NODE_COUNT:-4}
 
-read -rp "Worker node instance type [t3.medium]: " NODE_SIZE
-NODE_SIZE=${NODE_SIZE:-t3.medium}
+read -rp "Worker node instance type [t3a.medium]: " NODE_SIZE
+NODE_SIZE=${NODE_SIZE:-t3a.medium}
 
-read -rp "Control Plane instance type [t3.medium]: " MASTER_SIZE
-MASTER_SIZE=${MASTER_SIZE:-t3.medium}
+read -rp "Control Plane instance type [t3a.medium]: " MASTER_SIZE
+MASTER_SIZE=${MASTER_SIZE:-t3a.medium}
 
-read -rp "EBS Volume size in GB [20]: " VOL_SIZE
-VOL_SIZE=${VOL_SIZE:-20}
+read -rp "EBS Volume size in GB [100]: " VOL_SIZE
+VOL_SIZE=${VOL_SIZE:-100}
 
 read -rp "VPC CIDR block [10.0.0.0/16]: " VPC_CIDR
 VPC_CIDR=${VPC_CIDR:-10.0.0.0/16}
