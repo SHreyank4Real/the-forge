@@ -18,10 +18,11 @@ Two GitHub Actions workflows (`workflow_dispatch`):
 
 ### Install ArgoCD + Traefik
 1. Downloads kubeconfig from S3
-2. Installs **Traefik** ingress controller with **Let's Encrypt** auto-TLS
+2. Installs **Traefik** with a reusable Let's Encrypt certificate resolver
 3. Creates **Route53 DNS record** for ArgoCD
-4. Installs **ArgoCD v3.4.3** in insecure mode (Traefik handles TLS)
-5. Outputs the initial admin password
+4. Installs **ArgoCD v3.4.3** from the vendored chart in `charts/argo-cd`
+5. Passes TLS through Traefik so ArgoCD serves its native certificate
+6. Outputs the initial admin password
 
 ---
 
@@ -34,16 +35,46 @@ the-forge/
 │   └── install-argocd.yml         # Workflow 2 — installs Traefik + ArgoCD
 ├── manifests/
 │   ├── traefik/
-│   │   └── values.yaml            # Traefik Helm values (Let's Encrypt ACME)
+│   │   └── values.yaml            # Traefik values (ACME + TLS passthrough)
 │   └── argocd/
-│       ├── argocd-cmd-params-cm.yaml  # ArgoCD insecure mode config
-│       └── ingress-route.yaml     # Traefik IngressRoute for ArgoCD
+│       ├── values.yaml            # ArgoCD Helm values (native TLS)
+│       └── ingress-route.yaml     # Traefik TCP route for ArgoCD
+├── charts/
+│   ├── argo-cd/                   # Vendored ArgoCD Helm chart
+│   └── traefik/                   # Vendored Traefik Helm chart
 ├── scripts/
 │   ├── setup-gh-env.sh            # First-time setup — sets all 13 vars + 1 secret
 │   └── update-vars.sh             # Quick update — changes only the 5 rotating values
 ├── .gitignore
 └── README.md
 ```
+
+---
+
+## Download Helm Charts
+
+The workflows install Helm charts only from the local `charts/` directory.
+Download the pinned charts manually before committing chart updates:
+
+```bash
+helm repo add traefik https://traefik.github.io/charts --force-update
+helm repo add argo https://argoproj.github.io/argo-helm --force-update
+helm repo update
+
+rm -rf charts/traefik charts/argo-cd
+
+helm pull traefik/traefik \
+  --version 40.3.0 \
+  --untar \
+  --untardir charts/
+
+helm pull argo/argo-cd \
+  --version 9.5.21 \
+  --untar \
+  --untardir charts/
+```
+
+Chart `argo-cd` version `9.5.21` installs ArgoCD `v3.4.3`.
 
 ---
 
@@ -84,8 +115,9 @@ Or go to **Actions** tab → **Forge K8s cluster** → **Run workflow**.
 After the cluster is running:
 
 ```bash
-# Via CLI (will prompt for ACME email)
-gh workflow run "Install ArgoCD + Traefik" --repo SHreyank4Real/the-forge \
+# Via CLI
+gh workflow run "Install ArgoCD + Traefik" \
+  --repo SHreyank4Real/the-forge \
   -f acme_email="your-email@example.com"
 
 # Watch the run
@@ -96,8 +128,40 @@ Once complete, access ArgoCD at: `https://argocd.<HOSTED_ZONE_ID>.realhandsonlab
 
 **Architecture:**
 ```
-Browser → HTTPS (Let's Encrypt) → Traefik (NLB) → ArgoCD Server (HTTP)
+Browser → HTTPS (ArgoCD certificate) → Traefik TCP passthrough (NLB) → ArgoCD Server (HTTPS)
 ```
+
+ArgoCD uses a self-signed certificate by default, so browsers will show a
+certificate warning until you configure a trusted certificate in ArgoCD.
+
+---
+
+## Application Certificates
+
+Traefik's `letsencrypt` certificate resolver remains available for applications
+deployed after ArgoCD. For example:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: example-app
+  namespace: example
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`app.example.com`)
+      kind: Rule
+      services:
+        - name: example-app
+          port: 80
+  tls:
+    certResolver: letsencrypt
+```
+
+This setup uses Traefik ACME, so it does not require cert-manager or a
+`ClusterIssuer`. ArgoCD separately uses TCP TLS passthrough.
 
 ---
 

@@ -1,0 +1,9 @@
+# Keep ArgoCD's native TLS enabled. Traefik forwards encrypted TCP traffic
+# directly to the argocd-server HTTPS service.
+configs:
+  params:
+    server.insecure: false
+
+server:
+  ingress:
+    enabled: false

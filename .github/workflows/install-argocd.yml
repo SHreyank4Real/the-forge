@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       acme_email:
-        description: "Email for Let's Encrypt registration"
+        description: "Email for Let's Encrypt certificate registration"
         required: true
         type: string
 
@@ -70,22 +70,10 @@ jobs:
       # =============================================
       # TRAEFIK INSTALLATION
       # =============================================
-      - name: Update Traefik values with ACME email
+      - name: Configure Let's Encrypt email
         run: |
           sed -i "s/CHANGE_ME@example.com/$ACME_EMAIL/g" manifests/traefik/values.yaml
-          echo "[OK] ACME email set to: $ACME_EMAIL"
-          cat manifests/traefik/values.yaml
-
-      # - name: Pull Traefik chart
-      #   run: |
-      #     helm repo add traefik https://traefik.github.io/charts
-      #     helm repo update
-
-      #     # Pull chart into charts/ folder
-      #     mkdir -p charts
-      #     helm pull traefik/traefik --untar --untardir charts/
-      #     echo "[OK] Traefik chart pulled to charts/traefik/"
-      #     ls -la charts/traefik/
+          echo "[OK] Let's Encrypt email configured"
 
       - name: Install Traefik from local chart
         run: |
@@ -160,20 +148,14 @@ jobs:
       # =============================================
       # ARGOCD INSTALLATION
       # =============================================
-      - name: Install ArgoCD v3.4.3
+      - name: Install ArgoCD v3.4.3 from local chart
         run: |
-          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          helm upgrade --install argocd charts/argo-cd/ \
+            -n argocd --create-namespace \
+            -f manifests/argocd/values.yaml \
+            --wait --timeout 10m
 
-          echo "Installing ArgoCD v3.4.3..."
-          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.4.3/manifests/install.yaml
-
-          echo "[OK] ArgoCD manifests applied"
-
-      - name: Patch ArgoCD to insecure mode
-        run: |
-          kubectl apply -f manifests/argocd/argocd-cmd-params-cm.yaml
-          kubectl rollout restart deployment argocd-server -n argocd
-          echo "[OK] ArgoCD server set to insecure mode (Traefik handles TLS)"
+          echo "[OK] ArgoCD installed from local chart with native TLS"
 
       - name: Wait for ArgoCD pods
         run: |
@@ -182,14 +164,14 @@ jobs:
           echo "[OK] All ArgoCD pods are running"
           kubectl get pods -n argocd
 
-      - name: Apply ArgoCD IngressRoute
+      - name: Apply ArgoCD TCP ingress route
         run: |
           # Update the domain in the IngressRoute if needed
           sed -i "s/argocd.959750009970.realhandsonlabs.net/argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net/g" \
             manifests/argocd/ingress-route.yaml
 
           kubectl apply -f manifests/argocd/ingress-route.yaml
-          echo "[OK] IngressRoute applied for argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net"
+          echo "[OK] TLS passthrough route applied for argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net"
 
       - name: Get ArgoCD initial admin password
         run: |
@@ -206,16 +188,15 @@ jobs:
           echo "  ⚠️  Change the admin password after first login!"
           echo "============================================="
 
-      - name: Wait for DNS + TLS
+      - name: Wait for DNS
         run: |
-          echo "Waiting 60s for DNS propagation and Let's Encrypt cert issuance..."
+          echo "Waiting 60s for DNS propagation..."
           sleep 60
 
-          echo "Testing HTTPS access..."
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net" --max-time 15 || true)
+          echo "Testing HTTPS access with ArgoCD's self-signed certificate..."
+          HTTP_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" "https://argocd.${HOSTED_ZONE_ID}.realhandsonlabs.net" --max-time 15 || true)
           if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "302" ]]; then
             echo "[OK] ArgoCD is accessible! HTTP $HTTP_CODE"
           else
-            echo "[INFO] HTTP $HTTP_CODE — TLS cert may still be provisioning. Try again in a few minutes."
-            echo "[INFO] Let's Encrypt HTTP-01 challenge needs DNS to resolve first."
+            echo "[INFO] HTTP $HTTP_CODE — DNS or the load balancer may still be propagating."
           fi

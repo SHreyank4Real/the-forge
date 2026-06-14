@@ -1,5 +1,6 @@
 # Traefik Helm Values for kOps on AWS
-# Installs Traefik with Let's Encrypt ACME (HTTP-01 challenge)
+# Traefik manages Let's Encrypt certificates for applications.
+# ArgoCD is the exception: its TCP route passes TLS through to ArgoCD.
 
 # --- Persistent storage for ACME certificates ---
 persistence:
@@ -12,8 +13,6 @@ additionalArguments:
   - "--certificatesresolvers.letsencrypt.acme.email=CHANGE_ME@example.com"
   - "--certificatesresolvers.letsencrypt.acme.storage=/data/acme.json"
   - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
-  # Uncomment the line below to use Let's Encrypt staging (for testing, avoids rate limits)
-  # - "--certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
 
 # --- Entrypoints ---
 ports:
@@ -32,7 +31,6 @@ ports:
     port: 8443
     exposedPort: 443
     protocol: TCP
-    # New syntax for enabling TLS
     http:
       tls:
         certResolver: letsencrypt
