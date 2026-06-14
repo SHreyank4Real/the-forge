@@ -1,4 +1,4 @@
-name: Install Cluster in AWS
+name: Forge K8s cluster
 
 on:
   workflow_dispatch:
