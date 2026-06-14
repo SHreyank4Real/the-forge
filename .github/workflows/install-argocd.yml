@@ -147,7 +147,7 @@ jobs:
               "Changes": [{
                 "Action": "UPSERT",
                 "ResourceRecordSet": {
-                  "Name": "argocd.'"${HOSTED_ZONE_ID}"'.realhandsonlabs.net",
+                  "Name": "argocd.'"$(aws sts get-caller-identity --query Account --output text)"'.realhandsonlabs.net",
                   "Type": "CNAME",
                   "TTL": 300,
                   "ResourceRecords": [{"Value": "'"$NLB_HOST"'"}]
